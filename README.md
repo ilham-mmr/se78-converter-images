@@ -11,7 +11,7 @@ It was built to avoid the common issue where a true-color BMP is converted by SE
 | Header | 2475 × 300 px |
 | Footer | 2475 × 150 px |
 
-The converter preserves the source aspect ratio, centers the artwork on a pure-white canvas (`RGB 255,255,255`), applies mild sharpening when upscaling, and writes an indexed 256-color BMP without dithering.
+By default, the converter preserves the source aspect ratio and centers the artwork on a pure-white canvas (`RGB 255,255,255`). It also supports a **full-width** layout for footer/header designs whose left/right positioning must be preserved, such as a decorative line or logo that needs to reach the right edge.
 
 ## Beginner-friendly Windows usage
 
@@ -80,6 +80,40 @@ Upload the generated BMP into **SE78 → GRAPHICS → BMAP → Color**.
 - TIFF
 - WEBP
 
+## Layout modes
+
+### Center layout — default
+
+Use this for normal logos/headers/footers where preserving proportions is more important than touching the page edges.
+
+```bat
+python se78_bmp_converter.py ZKPJ_S050_FOOTER.png
+```
+
+Equivalent explicit command:
+
+```bat
+python se78_bmp_converter.py ZKPJ_S050_FOOTER.png --layout center
+```
+
+The image is resized proportionally and centered on the white output canvas.
+
+### Full-width layout
+
+Use this when the original image has meaningful left/right positioning and must span the entire footer/header width. This is useful for designs where a decorative line must touch the right edge or a logo must remain far to the right.
+
+```bat
+python se78_bmp_converter.py ZKPJ_H001_FOOTER.jpeg --type footer --layout full-width
+```
+
+In `full-width` mode the converter:
+
+- preserves the source's horizontal composition
+- removes only outer top/bottom whitespace
+- scales the artwork to the exact target width
+- keeps all footer content inside the target height rather than cropping text/logos
+- still outputs a white-background 8-bit / 256-color SE78 BMP
+
 ## Command-line examples
 
 Convert one header:
@@ -98,6 +132,12 @@ Convert all supported images in the current folder:
 
 ```bat
 python se78_bmp_converter.py .
+```
+
+Convert a full-width footer:
+
+```bat
+python se78_bmp_converter.py ZKPJ_H001_FOOTER.jpeg --layout full-width
 ```
 
 Convert a file whose name does not contain `HEADER` or `FOOTER`:
@@ -126,17 +166,22 @@ You can also use the converter for arbitrary canvas sizes. When both `--width` a
 python se78_bmp_converter.py logo.png --width 2475 --height 500
 ```
 
-The image is still fitted proportionally, centered on white, and saved as an 8-bit / 256-color BMP.
+You can combine custom dimensions with either layout mode:
+
+```bat
+python se78_bmp_converter.py logo.png --width 2475 --height 500 --layout full-width
+```
 
 ## Output characteristics
 
 - BMP format
 - 8-bit / 256-color indexed palette
 - Exact white canvas: `RGB(255,255,255)`
-- Aspect ratio preserved
-- No stretching
 - No dithering during palette conversion
+- Mild sharpening after upscaling
 - Existing `_SE78_256COLOR.BMP` outputs are skipped during folder conversion
+
+`center` preserves the source aspect ratio. `full-width` prioritizes the source's horizontal layout and edge placement, so it may vertically compress very wide artwork to keep all content inside the target height.
 
 ## Troubleshooting
 
@@ -149,6 +194,12 @@ python -m pip install pillow
 ```
 
 If automatic detection fails, either rename the file to include `HEADER`/`FOOTER`, pass `--type header` or `--type footer`, or use a custom `--width` and `--height`.
+
+If a footer is centered but the original artwork is supposed to span from left to right, use:
+
+```bat
+--layout full-width
+```
 
 ## Downloading as a ZIP
 
