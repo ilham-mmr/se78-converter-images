@@ -5,12 +5,17 @@ Default presets:
 - Header: 2475 x 300 px
 - Footer: 2475 x 150 px
 
+Layouts:
+- center: preserve aspect ratio and center on white canvas (default)
+- full-width: preserve the source's left/right composition, remove only
+  outer vertical whitespace, fill the full target width, and keep the
+  artwork inside the target height. Useful for footer designs where a
+  decorative line/logo must reach the right edge.
+
 Output:
 - BMP
 - 8-bit / 256-color indexed palette
 - Pure white background RGB(255, 255, 255)
-- Aspect ratio preserved
-- Centered on a fixed-size canvas
 - Mild sharpening after upscaling
 - No dithering during palette conversion
 """
@@ -78,6 +83,124 @@ def get_target_size(
     raise ValueError(f"Unsupported asset type: {asset_type}")
 
 
+def crop_vertical_whitespace(
+    image: Image.Image,
+    threshold: int = 245,
+    padding: int = 2,
+) -> Image.Image:
+    """Remove only top/bottom near-white whitespace.
+
+    Horizontal coordinates are deliberately preserved so full-width artwork
+    keeps its original left/right composition.
+    """
+    rgb = image.convert("RGB")
+    pixels = rgb.load()
+    width, height = rgb.size
+
+    first = None
+    last = None
+
+    for y in range(height):
+        row_has_content = False
+        for x in range(width):
+            r, g, b = pixels[x, y]
+            if r < threshold or g < threshold or b < threshold:
+                row_has_content = True
+                break
+
+        if row_has_content:
+            if first is None:
+                first = y
+            last = y
+
+    if first is None or last is None:
+        return rgb
+
+    top = max(0, first - padding)
+    bottom = min(height, last + 1 + padding)
+    return rgb.crop((0, top, width, bottom))
+
+
+def prepare_center_layout(
+    image: Image.Image,
+    target_size: tuple[int, int],
+    sharpen: bool,
+) -> Image.Image:
+    """Original behavior: proportional fit centered on a white canvas."""
+    target_width, target_height = target_size
+    scale = min(target_width / image.width, target_height / image.height)
+    resized_width = max(1, round(image.width * scale))
+    resized_height = max(1, round(image.height * scale))
+
+    resized = image.resize(
+        (resized_width, resized_height),
+        Image.Resampling.LANCZOS,
+    )
+
+    if sharpen and scale > 1:
+        resized = resized.filter(
+            ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=2)
+        )
+
+    canvas = Image.new(
+        "RGB",
+        (target_width, target_height),
+        (255, 255, 255),
+    )
+
+    x = (target_width - resized_width) // 2
+    y = (target_height - resized_height) // 2
+    canvas.paste(resized, (x, y))
+    return canvas
+
+
+def prepare_full_width_layout(
+    image: Image.Image,
+    target_size: tuple[int, int],
+    sharpen: bool,
+) -> Image.Image:
+    """Fill full width while preserving the source's horizontal composition.
+
+    This mode is intended for footer/header artwork whose left/right placement
+    is meaningful, for example a line that must touch the right edge.
+
+    Only top/bottom whitespace is trimmed. The artwork is scaled to the exact
+    target width. If the proportional height would exceed the target height,
+    it is compressed vertically so no text/logo is cropped.
+    """
+    target_width, target_height = target_size
+    cropped = crop_vertical_whitespace(image)
+
+    width_scale = target_width / cropped.width
+    proportional_height = max(1, round(cropped.height * width_scale))
+
+    resized = cropped.resize(
+        (target_width, proportional_height),
+        Image.Resampling.LANCZOS,
+    )
+
+    if sharpen and width_scale > 1:
+        resized = resized.filter(
+            ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=2)
+        )
+
+    if proportional_height > target_height:
+        resized = resized.resize(
+            (target_width, target_height),
+            Image.Resampling.LANCZOS,
+        )
+        return resized
+
+    canvas = Image.new(
+        "RGB",
+        (target_width, target_height),
+        (255, 255, 255),
+    )
+    y = (target_height - proportional_height) // 2
+    canvas.paste(resized, (0, y))
+    return canvas
+
+
 def ensure_pure_white_palette(
     paletted: Image.Image,
     original_rgb: Image.Image,
@@ -116,37 +239,25 @@ def convert_image(
     src: Path,
     dst: Path,
     target_size: tuple[int, int],
+    layout: str = "center",
     sharpen: bool = True,
 ) -> None:
     """Convert one image to an SAP SE78-friendly 256-color BMP."""
-    target_width, target_height = target_size
-
     with Image.open(src) as opened:
         image = flatten_on_white(opened)
 
-    scale = min(target_width / image.width, target_height / image.height)
-    resized_width = max(1, round(image.width * scale))
-    resized_height = max(1, round(image.height * scale))
-
-    resized = image.resize(
-        (resized_width, resized_height),
-        Image.Resampling.LANCZOS,
-    )
-
-    if sharpen and scale > 1:
-        resized = resized.filter(
-            ImageFilter.UnsharpMask(radius=1.0, percent=110, threshold=2)
+    if layout == "full-width":
+        canvas = prepare_full_width_layout(
+            image=image,
+            target_size=target_size,
+            sharpen=sharpen,
         )
-
-    canvas = Image.new(
-        "RGB",
-        (target_width, target_height),
-        (255, 255, 255),
-    )
-
-    x = (target_width - resized_width) // 2
-    y = (target_height - resized_height) // 2
-    canvas.paste(resized, (x, y))
+    else:
+        canvas = prepare_center_layout(
+            image=image,
+            target_size=target_size,
+            sharpen=sharpen,
+        )
 
     indexed = canvas.quantize(
         colors=256,
@@ -160,7 +271,7 @@ def convert_image(
 
     print(
         f"[OK] {src.name} -> {dst.name} "
-        f"({target_width}x{target_height}, 8-bit/256-color)"
+        f"({target_size[0]}x{target_size[1]}, 8-bit/256-color, layout={layout})"
     )
 
 
@@ -219,6 +330,16 @@ def main() -> int:
         help="Preset type. Default: auto-detect HEADER/FOOTER from filename.",
     )
     parser.add_argument(
+        "--layout",
+        choices=("center", "full-width"),
+        default="center",
+        help=(
+            "Layout mode. 'center' keeps the original proportional centered "
+            "behavior. 'full-width' preserves left/right placement and fills "
+            "the full canvas width. Default: center."
+        ),
+    )
+    parser.add_argument(
         "--width",
         type=int,
         default=None,
@@ -267,6 +388,7 @@ def main() -> int:
                 src=src,
                 dst=dst,
                 target_size=target_size,
+                layout=args.layout,
                 sharpen=not args.no_sharpen,
             )
             converted += 1
